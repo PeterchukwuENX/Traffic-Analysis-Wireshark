@@ -1,0 +1,41 @@
+Traffic Analysis: Picking a Port Scan Out of Real Traffic
+
+What I did
+
+Captured live traffic on Kali (eth1) with Wireshark, then ran two different nmap scans against my Ubuntu hardening server (192.168.56.105) from Kali (192.168.56.104) - a basic SYN scan first, then a more aggressive version/OS detection scan. Point of this was to actually see the difference between "quietly checking if a port is open" and "aggressively fingerprinting a target," both in the scan output itself and in what shows up on the wire.
+
+1. Confirming a single open port
+
+![SYN-ACK filter](images/01-syn-ack-filter.png)
+
+Filtered Wireshark down to just: `ip.src==192.168.56.105 && tcp.flags.syn==1 && tcp.flags.ack==1` - in plain terms, "show me only the packets where my target replied with SYN-ACK." A SYN-ACK is the server's way of saying "yes, this port's open, I'm ready to talk." One single matching packet came back, source port 22 - that's the confirmation port 22 (SSH) is open and responding, isolated out of thousands of other packets in the capture.
+
+2. The SYN scan (`sudo nmap -sS 192.168.56.105`)
+
+![nmap SYN scan results](images/02-nmap-syn-scan.png)
+
+This is the quieter of the two scan types - it doesn't complete a full connection to each port, just sends a SYN and watches for the reply, which is faster and leaves less of a footprint than a full connection would. Results: port 22 open, 999 and 2222 closed, everything else filtered/no response. This matches exactly what I'd expect - port 22 is the only thing I intentionally left open after hardening the server.
+
+3. The aggressive scan (`sudo nmap -sV -O 192.168.56.105`)
+
+![nmap version/OS detection scan](images/03-nmap-aggressive-scan.png)
+
+This one goes a lot further - `-sV` grabs the actual service banner (it correctly identified OpenSSH 9.6p1 running on Ubuntu), and `-O` tries to fingerprint the operating system itself by how the target responds to unusual/malformed packets. It came back with a strong guess (Linux 5.0-5.14, 98% confidence) without ever being told what OS this is.
+
+This is the part that actually clicked for me: this single scan just handed an attacker the exact software version running on my server, which is precisely the kind of detail someone would use to look up a known vulnerability for that specific version. That's the real reason "don't leak version banners" is a hardening recommendation - I'd read that before, but seeing nmap pull it out this cleanly made it click in a way reading it never did.
+
+4. What this actually looked like on the wire
+
+![Raw capture showing scan noise](images/04-raw-scan-traffic.png)
+
+This is the busiest of the four - lots of RST,ACK packets, retransmissions, and rapid-fire connection attempts on port 999 in a very short time window, mixed in with completely unrelated normal traffic (MDNS broadcast packets from other devices on the network, visible further down). 
+
+This is the actual skill this project was after: the scan traffic doesn't come labeled "this is a scan" - it just looks like an unusually high number of quick, repetitive connection attempts and resets against a narrow range of ports, in a short burst, compared to normal traffic which is more varied and spread out. Picking that pattern out from the surrounding noise (like the MDNS packets, which have nothing to do with anything) is the actual daily task, more than knowing what a scan is in theory.
+
+What I actually learned
+- A SYN scan is deliberately quieter than a full connection - useful to know both offensively and defensively, since it's the kind of scan that's easier to miss if you're not watching for it.
+- Service/version detection (`-sV`) can hand over real, actionable information (exact software version) - not just "is this port open."
+- On the wire, a scan doesn't announce itself - it shows up as a pattern (repetition, speed, narrow port range, lots of resets) that has to be picked out from ordinary background traffic sitting right next to it.
+
+Why I built this
+Part of my path toward a SOC analyst role. Reading raw traffic and telling a real pattern apart from normal noise is one of the core, repeated parts of that job - this was my first real attempt at doing it with an actual capture instead of just a description of what a scan "would" look like.
